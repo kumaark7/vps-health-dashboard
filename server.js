@@ -1,6 +1,7 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
+const os = require("node:os");
 const path = require("node:path");
 const { URL } = require("node:url");
 const { execFile } = require("node:child_process");
@@ -43,6 +44,52 @@ function loadEnvFile() {
   }
 
   return parsed;
+}
+
+function getEnv() {
+  return {
+    ...loadEnvFile(),
+    ...process.env
+  };
+}
+
+function getEnvDebug(env) {
+  return {
+    hasHost: Boolean(env.VPS_HOST),
+    hasPort: Boolean(env.VPS_PORT),
+    hasUser: Boolean(env.VPS_USER),
+    hasKeyPath: Boolean(env.VPS_SSH_KEY_PATH),
+    hasPrivateKey: Boolean(env.VPS_SSH_PRIVATE_KEY),
+    hasFileRoot: Boolean(env.VPS_FILE_ROOT),
+    nodeEnv: process.env.NODE_ENV || "unset",
+    runningOnRender: Boolean(process.env.RENDER)
+  };
+}
+
+function normalizeMultilineValue(value) {
+  if (!value) {
+    return value;
+  }
+
+  return value.replace(/\\n/g, "\n").trim();
+}
+
+async function ensureSshKeyFile(env) {
+  if (env.VPS_SSH_KEY_PATH) {
+    return env.VPS_SSH_KEY_PATH;
+  }
+
+  if (!env.VPS_SSH_PRIVATE_KEY) {
+    return null;
+  }
+
+  const normalizedKey = normalizeMultilineValue(env.VPS_SSH_PRIVATE_KEY);
+  const keyFilePath = path.join(os.tmpdir(), "vps-health-dashboard-render-key");
+  await fsp.writeFile(keyFilePath, `${normalizedKey}\n`, {
+    encoding: "utf8",
+    mode: 0o600
+  });
+  return keyFilePath;
 }
 
 function loadMonitorConfig() {
@@ -169,8 +216,8 @@ function buildSshArgs(env) {
     sshArgs.push("-p", env.VPS_PORT);
   }
 
-  if (env.VPS_SSH_KEY_PATH) {
-    sshArgs.push("-i", env.VPS_SSH_KEY_PATH);
+  if (env._resolvedKeyPath) {
+    sshArgs.push("-i", env._resolvedKeyPath);
   }
 
   return sshArgs;
@@ -297,7 +344,8 @@ async function probeStorage(env, serverState) {
 }
 
 async function buildDashboard() {
-  const env = loadEnvFile();
+  const env = getEnv();
+  env._resolvedKeyPath = await ensureSshKeyFile(env);
   const config = loadMonitorConfig();
   const services = await Promise.all(
     (config.services || []).map((service) => {
@@ -333,6 +381,7 @@ async function buildDashboard() {
     summary: {
       averageLatencyMs
     },
+    envDebug: getEnvDebug(env),
     server,
     storage,
     services
@@ -370,7 +419,8 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (requestUrl.pathname === "/api/storage") {
-      const env = loadEnvFile();
+      const env = getEnv();
+      env._resolvedKeyPath = await ensureSshKeyFile(env);
       const serverState = await probeServer(env);
       const storage = await probeStorage(env, serverState);
       await sendJson(response, 200, storage);
