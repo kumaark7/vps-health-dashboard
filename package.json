@@ -1,0 +1,9 @@
+{
+  "name": "vps-health-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simple website and VPS monitoring dashboard",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

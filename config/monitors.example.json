@@ -1,0 +1,26 @@
+{
+  "services": [
+    {
+      "id": "main-site",
+      "name": "Main Website",
+      "type": "website",
+      "url": "https://example.com",
+      "method": "GET",
+      "timeoutMs": 8000
+    },
+    {
+      "id": "admin-panel",
+      "name": "Admin Panel",
+      "type": "website",
+      "url": "https://example.org",
+      "method": "GET",
+      "timeoutMs": 8000
+    },
+    {
+      "id": "database-port",
+      "name": "Database Port",
+      "type": "private",
+      "note": "Internal only"
+    }
+  ]
+}

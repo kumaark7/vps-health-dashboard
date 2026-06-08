@@ -1,0 +1,26 @@
+{
+  "services": [
+    {
+      "id": "vps-manager",
+      "name": "VPS Manager",
+      "type": "website",
+      "url": "http://144.24.158.211",
+      "method": "GET",
+      "timeoutMs": 8000
+    },
+    {
+      "id": "quick-share",
+      "name": "Quick Share",
+      "type": "website",
+      "url": "http://144.24.158.211:8788/",
+      "method": "GET",
+      "timeoutMs": 8000
+    },
+    {
+      "id": "database-port",
+      "name": "Database Port",
+      "type": "private",
+      "note": "Internal only"
+    }
+  ]
+}
