@@ -644,6 +644,87 @@ footer {
   font-size: 13px;
 }
 
+.logout-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  border: 0;
+  border-radius: 999px;
+  padding: 13px 18px;
+  color: #fff;
+  background: linear-gradient(90deg, #8f5df5, #f044a4);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.login-card {
+  width: min(460px, 100%);
+  padding: 32px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.045), transparent 46%),
+    var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.login-brand {
+  margin-bottom: 24px;
+}
+
+.login-brand p {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+}
+
+.login-form {
+  display: grid;
+  gap: 16px;
+}
+
+.login-form label {
+  display: grid;
+  gap: 8px;
+}
+
+.login-form span {
+  color: #dbe3fb;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.login-form input {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  padding: 14px 16px;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.login-button {
+  border: 0;
+  border-radius: 12px;
+  padding: 14px 16px;
+  color: #fff;
+  background: linear-gradient(90deg, #8f5df5, #f044a4);
+  cursor: pointer;
+}
+
+.login-message {
+  min-height: 20px;
+  color: #ffb6c8;
+  font-size: 13px;
+}
+
 @media (max-width: 920px) {
   .topbar {
     grid-template-columns: 1fr;

@@ -1,4 +1,5 @@
 const http = require("node:http");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const os = require("node:os");
@@ -11,7 +12,9 @@ const tls = require("node:tls");
 const execFileAsync = promisify(execFile);
 const rootDir = __dirname;
 const storageScriptPath = path.join(rootDir, "remote-storage-summary.js");
-const publicFiles = new Set(["/index.html", "/styles.css", "/script.js"]);
+const stateDirPath = path.join(rootDir, "data");
+const alertStatePath = path.join(stateDirPath, "monitor-state.json");
+const publicFiles = new Set(["/index.html", "/styles.css", "/script.js", "/login.html", "/login.js"]);
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -53,19 +56,6 @@ function getEnv() {
   };
 }
 
-function getEnvDebug(env) {
-  return {
-    hasHost: Boolean(env.VPS_HOST),
-    hasPort: Boolean(env.VPS_PORT),
-    hasUser: Boolean(env.VPS_USER),
-    hasKeyPath: Boolean(env.VPS_SSH_KEY_PATH),
-    hasPrivateKey: Boolean(env.VPS_SSH_PRIVATE_KEY),
-    hasFileRoot: Boolean(env.VPS_FILE_ROOT),
-    nodeEnv: process.env.NODE_ENV || "unset",
-    runningOnRender: Boolean(process.env.RENDER)
-  };
-}
-
 function normalizeMultilineValue(value) {
   if (!value) {
     return value;
@@ -97,6 +87,168 @@ function loadMonitorConfig() {
   const fallbackPath = path.join(rootDir, "config", "monitors.example.json");
   const targetPath = fs.existsSync(configPath) ? configPath : fallbackPath;
   return JSON.parse(fs.readFileSync(targetPath, "utf8"));
+}
+
+function getSessionSecret(env) {
+  return env.SESSION_SECRET || "local-dashboard-session-secret";
+}
+
+function parseCookies(request) {
+  const cookieHeader = request.headers.cookie || "";
+  return cookieHeader.split(";").reduce((cookies, chunk) => {
+    const [rawKey, ...rawValue] = chunk.trim().split("=");
+    if (!rawKey) {
+      return cookies;
+    }
+
+    cookies[rawKey] = decodeURIComponent(rawValue.join("=") || "");
+    return cookies;
+  }, {});
+}
+
+function createSessionToken(username, env) {
+  const payload = JSON.stringify({
+    username,
+    expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000)
+  });
+  const encodedPayload = Buffer.from(payload, "utf8").toString("base64url");
+  const signature = crypto
+    .createHmac("sha256", getSessionSecret(env))
+    .update(encodedPayload)
+    .digest("base64url");
+  return `${encodedPayload}.${signature}`;
+}
+
+function verifySessionToken(token, env) {
+  if (!token || !token.includes(".")) {
+    return null;
+  }
+
+  const [encodedPayload, providedSignature] = token.split(".");
+  const expectedSignature = crypto
+    .createHmac("sha256", getSessionSecret(env))
+    .update(encodedPayload)
+    .digest("base64url");
+
+  if (providedSignature !== expectedSignature) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
+    if (!payload.expiresAt || payload.expiresAt < Date.now()) {
+      return null;
+    }
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function isAuthenticated(request, env) {
+  if (!env.AUTH_USERNAME || !env.AUTH_PASSWORD) {
+    return true;
+  }
+
+  const cookies = parseCookies(request);
+  const session = verifySessionToken(cookies.dashboard_session, env);
+  return Boolean(session && session.username === env.AUTH_USERNAME);
+}
+
+function buildCookie(name, value, maxAgeSeconds) {
+  const cookieParts = [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${maxAgeSeconds}`
+  ];
+
+  if (process.env.RENDER || process.env.NODE_ENV === "production") {
+    cookieParts.push("Secure");
+  }
+
+  return cookieParts.join("; ");
+}
+
+async function readRequestBody(request) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    request.on("data", (chunk) => {
+      body += chunk.toString("utf8");
+      if (body.length > 1024 * 1024) {
+        reject(new Error("Request body too large"));
+      }
+    });
+    request.on("end", () => resolve(body));
+    request.on("error", reject);
+  });
+}
+
+function jsonResponse(response, statusCode, payload, extraHeaders = {}) {
+  response.writeHead(statusCode, {
+    "content-type": contentTypes[".json"],
+    ...extraHeaders
+  });
+  response.end(JSON.stringify(payload, null, 2));
+}
+
+function redirect(response, location) {
+  response.writeHead(302, { location });
+  response.end();
+}
+
+async function readAlertState() {
+  try {
+    const raw = await fsp.readFile(alertStatePath, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return { services: {} };
+  }
+}
+
+async function writeAlertState(state) {
+  await fsp.mkdir(stateDirPath, { recursive: true });
+  await fsp.writeFile(alertStatePath, JSON.stringify(state, null, 2), "utf8");
+}
+
+async function sendDiscordAlert(env, service, previousStatus) {
+  if (!env.DISCORD_WEBHOOK_URL) {
+    return;
+  }
+
+  const isRecovery = service.status === "online";
+  const content = isRecovery
+    ? `🟢 ${service.name} recovered\nURL: ${service.url}\nStatus: ${service.statusLabel}\nLatency: ${service.latencyLabel}`
+    : `🔴 ${service.name} is down\nURL: ${service.url}\nPrevious: ${previousStatus || "unknown"}\nCurrent: ${service.statusLabel}`;
+
+  try {
+    await fetch(env.DISCORD_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content })
+    });
+  } catch {
+    // Swallow alert transport errors so monitoring still works.
+  }
+}
+
+async function notifyMonitorChanges(env, services) {
+  const alertableServices = services.filter((service) => service.type === "website");
+  const state = await readAlertState();
+  const nextState = { services: { ...state.services } };
+
+  for (const service of alertableServices) {
+    const previousStatus = state.services[service.id];
+    if (previousStatus && previousStatus !== service.status) {
+      await sendDiscordAlert(env, service, previousStatus);
+    }
+
+    nextState.services[service.id] = service.status;
+  }
+
+  await writeAlertState(nextState);
 }
 
 async function readSslDays(targetUrl) {
@@ -375,13 +527,13 @@ async function buildDashboard() {
 
   const server = await probeServer(env);
   const storage = await probeStorage(env, server);
+  await notifyMonitorChanges(env, services);
 
   return {
     generatedAt: new Date().toISOString(),
     summary: {
       averageLatencyMs
     },
-    envDebug: getEnvDebug(env),
     server,
     storage,
     services
@@ -389,8 +541,7 @@ async function buildDashboard() {
 }
 
 async function sendJson(response, statusCode, payload) {
-  response.writeHead(statusCode, { "content-type": contentTypes[".json"] });
-  response.end(JSON.stringify(payload, null, 2));
+  jsonResponse(response, statusCode, payload);
 }
 
 async function serveStatic(requestPath, response) {
@@ -411,6 +562,70 @@ async function serveStatic(requestPath, response) {
 const server = http.createServer(async (request, response) => {
   try {
     const requestUrl = new URL(request.url, "http://127.0.0.1");
+    const env = getEnv();
+    const authenticated = isAuthenticated(request, env);
+
+    if (requestUrl.pathname === "/api/login" && request.method === "POST") {
+      const body = await readRequestBody(request);
+      const parsedBody = JSON.parse(body || "{}");
+
+      if (!env.AUTH_USERNAME || !env.AUTH_PASSWORD) {
+        await sendJson(response, 200, { ok: true, authEnabled: false });
+        return;
+      }
+
+      if (parsedBody.username === env.AUTH_USERNAME && parsedBody.password === env.AUTH_PASSWORD) {
+        const token = createSessionToken(parsedBody.username, env);
+        jsonResponse(
+          response,
+          200,
+          { ok: true },
+          { "set-cookie": buildCookie("dashboard_session", token, 7 * 24 * 60 * 60) }
+        );
+        return;
+      }
+
+      await sendJson(response, 401, { ok: false, message: "Invalid username or password." });
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/logout" && request.method === "POST") {
+      jsonResponse(
+        response,
+        200,
+        { ok: true },
+        { "set-cookie": buildCookie("dashboard_session", "", 0) }
+      );
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/auth") {
+      await sendJson(response, 200, {
+        authenticated,
+        authEnabled: Boolean(env.AUTH_USERNAME && env.AUTH_PASSWORD)
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === "/login" && (!env.AUTH_USERNAME || !env.AUTH_PASSWORD)) {
+      redirect(response, "/");
+      return;
+    }
+
+    if (requestUrl.pathname === "/login") {
+      await serveStatic("/login.html", response);
+      return;
+    }
+
+    if (!authenticated && requestUrl.pathname.startsWith("/api/")) {
+      await sendJson(response, 401, { error: "Authentication required" });
+      return;
+    }
+
+    if (!authenticated && requestUrl.pathname !== "/styles.css" && requestUrl.pathname !== "/login.js") {
+      redirect(response, "/login");
+      return;
+    }
 
     if (requestUrl.pathname === "/api/dashboard") {
       const dashboard = await buildDashboard();
@@ -419,7 +634,6 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (requestUrl.pathname === "/api/storage") {
-      const env = getEnv();
       env._resolvedKeyPath = await ensureSshKeyFile(env);
       const serverState = await probeServer(env);
       const storage = await probeStorage(env, serverState);

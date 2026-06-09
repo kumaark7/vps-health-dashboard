@@ -36,6 +36,7 @@ const els = {
   lastUpdated: document.querySelector("#lastUpdated"),
   footerMessage: document.querySelector("#footerMessage"),
   refreshButton: document.querySelector("#refreshButton"),
+  logoutButton: document.querySelector("#logoutButton"),
   previousService: document.querySelector("#previousService"),
   nextService: document.querySelector("#nextService")
 };
@@ -263,6 +264,10 @@ async function refreshDashboard() {
 
   try {
     const response = await fetch("/api/dashboard", { cache: "no-store" });
+    if (response.status === 401) {
+      window.location.href = "/login";
+      return;
+    }
     if (!response.ok) {
       throw new Error(`Request failed with ${response.status}`);
     }
@@ -284,6 +289,10 @@ async function refreshDashboard() {
 }
 
 els.refreshButton.addEventListener("click", refreshDashboard);
+els.logoutButton.addEventListener("click", async () => {
+  await fetch("/api/logout", { method: "POST" });
+  window.location.href = "/login";
+});
 els.previousService.addEventListener("click", () => selectService(selectedServiceIndex - 1));
 els.nextService.addEventListener("click", () => selectService(selectedServiceIndex + 1));
 
